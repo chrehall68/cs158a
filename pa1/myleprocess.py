@@ -24,16 +24,26 @@ class Message:
         return json.dumps({"uuid": str(self.uuid), "flag": self.flag}).encode()
 
     @staticmethod
-    def decode(data: bytes):
-        data_str = data.decode()
+    def decode(data: str):
         try:
-            items = json.loads(data.decode())
+            items = json.loads(data)
             return Message(uuid=UUID(items["uuid"]), flag=items["flag"])
         except json.JSONDecodeError:
-            # TODO - handle this
-            # after all, we aren't guaranteed that messages arrive
-            # one at a time since tcp is a stream
-            raise RuntimeError(f"Failed to decode {data_str}")
+            raise RuntimeError(f"Failed to decode {data}")
+
+    @staticmethod
+    def decode_from_buffer(data: str) -> tuple["Message | None", str]:
+        # because we know we just have UUIDs and an integer,
+        # we know "}" is the end of a message
+        # we have to do this since we aren't guaranteed that messages arrive
+        # one at a time since tcp is a stream
+        # (and it happened to me that sometimes conn.recv() would return multiple messages at once)
+        if "}" in data:
+            substr = data[: data.find("}") + 1]
+            remaining = data[len(substr) :]
+            return Message.decode(substr), remaining
+        else:
+            return None, data
 
 
 to_process = Queue()
@@ -87,44 +97,54 @@ def server_task(log_writer, id, server_ip, server_port):
             received_leader_message = False
             knows_leader = False
             leader = None
+            buf = ""
             while not received_leader_message:
                 # wait for message from client
                 data = conn.recv(MAX_BUF_SIZE)
-                message = Message.decode(data)
+                buf += data.decode()
 
-                if message.flag == 1:
-                    knows_leader = True
-                    received_leader_message = True
-                    leader = message.uuid
-
-                if message.uuid > id:
-                    # forward along
-                    to_process.put(message)
-                elif message.uuid == id:
-                    # if 1, we are already the leader and don't need to do anything
-                    if message.flag == 0:
-                        # forward saying that now I am the leader
-                        # but keep ourselves alive that way we can receive
-                        # the forwarded message
+                message, buf = Message.decode_from_buffer(buf)
+                while message is not None:
+                    if message.flag == 1:
                         knows_leader = True
-                        to_process.put(Message(id, 1))
-                # otherwise, nothing to do since it's <
+                        received_leader_message = True
+                        leader = message.uuid
 
-                # log
-                greater_message = "greater"
-                if message.uuid < id:
-                    greater_message = "less, so ignored it"
-                elif message.uuid == id:
-                    greater_message = "equal"
-                leader_message = "0"
-                if knows_leader:
-                    leader_message = leader
-                log_writer.write(
-                    f"Received {message}, {greater_message}, leader={leader_message}\n"
-                )
+                    if message.uuid > id:
+                        # forward along
+                        to_process.put(message)
+                    elif message.uuid == id:
+                        # if 1, we are already the leader and don't need to do anything
+                        if message.flag == 0:
+                            # forward saying that now I am the leader
+                            # but keep ourselves alive that way we can receive
+                            # the forwarded message
+                            knows_leader = True
+                            leader = id
+                            to_process.put(Message(id, 1))
+                    # otherwise, nothing to do since it's <
+
+                    # log
+                    greater_message = "greater"
+                    if message.uuid < id:
+                        greater_message = "less, so ignored it"
+                    elif message.uuid == id:
+                        greater_message = "equal"
+                    leader_message = "0"
+                    if knows_leader:
+                        leader_message = leader
+                    log_writer.write(
+                        f"Received {message}, {greater_message}, leader={leader_message}\n"
+                    )
+
+                    # advance
+                    message, buf = Message.decode_from_buffer(buf)
+
+            # now that we have a leader,
             # tell receiver to stop by sending a 2
             to_process.put(Message(id, 2))
             print(f"Leader is {leader}")
+            assert buf == ""
 
 
 def main(config_file: Path, log_file: Path):
