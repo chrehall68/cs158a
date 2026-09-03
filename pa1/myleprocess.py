@@ -1,9 +1,11 @@
 import socket
+import time
 import json
 from argparse import ArgumentParser
 from pathlib import Path
-import asyncio
+from queue import Queue
 from uuid import UUID, uuid4
+from threading import Thread
 from dataclasses import dataclass
 
 # the actual used size should be less since
@@ -27,14 +29,24 @@ class Message:
         return Message(uuid=UUID(items["uuid"]), flag=items["flag"])
 
 
-to_process = asyncio.Queue()
+to_process = Queue()
 
 
 # https://en.wikipedia.org/wiki/Leader_election#Asynchronous_ring%5B3%5D
-async def client_task(id, destination_ip, destination_port):
+def client_task(id, destination_ip, destination_port):
     print("connecting to", destination_ip, destination_port)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((destination_ip, destination_port))
+    to_wait_seconds = 1
+    while True:
+        try:
+            sock.connect((destination_ip, destination_port))
+            break
+        except ConnectionRefusedError:
+            print(
+                f"Failed to connect to {destination_ip}:{destination_port}, retrying in {to_wait_seconds} seconds"
+            )
+            to_wait_seconds *= 2
+            time.sleep(to_wait_seconds)
     # clients are actually the ones that send, while servers
     # are the ones that receive
     print(f"Client {id} connected to {destination_ip}:{destination_port}")
@@ -42,7 +54,7 @@ async def client_task(id, destination_ip, destination_port):
     # initialization -> send id
     sock.send(Message(id, 0).encode())
     while True:
-        message = await to_process.get()
+        message = to_process.get()
         if message.flag == 2:
             break
         sock.send(message.encode())
@@ -50,7 +62,7 @@ async def client_task(id, destination_ip, destination_port):
     sock.close()
 
 
-async def server_task(id, server_ip, server_port):
+def server_task(id, server_ip, server_port):
     print("listening on", server_ip, server_port)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((server_ip, server_port))
@@ -72,22 +84,22 @@ async def server_task(id, server_ip, server_port):
 
         if message.uuid > id:
             # forward along
-            await to_process.put(message)
+            to_process.put(message)
         elif message.uuid == id:
             if message.flag == 0:
                 # forward saying that now I am the leader
                 # but keep ourselves alive that way we can receive
                 # the forwarded message
-                await to_process.put(Message(id, 1))
+                to_process.put(Message(id, 1))
         # otherwise, nothing to do
         else:
             pass
     # tell receiver to stop
-    await to_process.put(Message(id, 2))
+    to_process.put(Message(id, 2))
     print(f"Leader is {leader}")
 
 
-async def main(config_file: Path):
+def main(config_file: Path):
     my_id = uuid4()
     # config.txt
     with open(config_file, "r") as f:
@@ -96,15 +108,18 @@ async def main(config_file: Path):
         my_server_port = int(my_server_port)
         destination_server_ip, destination_server_port = lines[1].split(",")
         destination_server_port = int(destination_server_port)
-    t1 = asyncio.create_task(
-        client_task(my_id, destination_server_ip, destination_server_port)
+    t1 = Thread(
+        target=client_task, args=(my_id, destination_server_ip, destination_server_port)
     )
-    t2 = asyncio.create_task(server_task(my_id, my_server_ip, my_server_port))
-    await asyncio.gather(t1, t2)
+    t2 = Thread(target=server_task, args=(my_id, my_server_ip, my_server_port))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("config_file", type=Path)
     args = parser.parse_args()
-    asyncio.run(main(args.config_file))
+    main(args.config_file)
