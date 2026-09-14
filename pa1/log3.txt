@@ -1,0 +1,6 @@
+Log for e715927b-5301-4a7f-9851-4db3f365f093
+Received Message(uuid=UUID('30f8dc41-e6ba-4e69-948c-787211d512d1'), flag=0), less, so ignored it, leader=0
+Received Message(uuid=UUID('79a2c9b5-e3b0-415e-8c67-695db5eaaacd'), flag=0), less, so ignored it, leader=0
+Received Message(uuid=UUID('e715927b-5301-4a7f-9851-4db3f365f093'), flag=0), equal, leader=e715927b-5301-4a7f-9851-4db3f365f093
+Sent Message(uuid=UUID('e715927b-5301-4a7f-9851-4db3f365f093'), flag=1)
+Received Message(uuid=UUID('e715927b-5301-4a7f-9851-4db3f365f093'), flag=1), equal, leader=e715927b-5301-4a7f-9851-4db3f365f093

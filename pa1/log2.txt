@@ -1,0 +1,7 @@
+Log for 30f8dc41-e6ba-4e69-948c-787211d512d1
+Received Message(uuid=UUID('79a2c9b5-e3b0-415e-8c67-695db5eaaacd'), flag=0), greater, leader=0
+Sent Message(uuid=UUID('79a2c9b5-e3b0-415e-8c67-695db5eaaacd'), flag=0)
+Received Message(uuid=UUID('e715927b-5301-4a7f-9851-4db3f365f093'), flag=0), greater, leader=0
+Sent Message(uuid=UUID('e715927b-5301-4a7f-9851-4db3f365f093'), flag=0)
+Received Message(uuid=UUID('e715927b-5301-4a7f-9851-4db3f365f093'), flag=1), greater, leader=e715927b-5301-4a7f-9851-4db3f365f093
+Sent Message(uuid=UUID('e715927b-5301-4a7f-9851-4db3f365f093'), flag=1)
