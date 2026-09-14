@@ -67,12 +67,12 @@ def client_task(log_writer, id, destination_ip, destination_port):
         print(f"Client {id} connected to {destination_ip}:{destination_port}")
 
         # initialization -> send id
-        sock.send(Message(id, 0).encode())
+        sock.sendall(Message(id, 0).encode())
         while True:
             message = to_process.get()
             if message.flag == 2:
                 break
-            sock.send(message.encode())
+            sock.sendall(message.encode())
             log_writer.write(f"Sent {message}\n")
 
 
