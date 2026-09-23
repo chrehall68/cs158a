@@ -1,0 +1,24 @@
+services:
+  machine1:
+    build: .
+    command: python3 agent.py --tcp-port 8900
+
+  machine2:
+    build: .
+    command: python3 agent.py --tcp-port 8900
+
+  machine3:
+    build: .
+    command: python3 agent.py --tcp-port 8900
+
+  machine4:
+    build: .
+    command: python3 agent.py --tcp-port 8900
+
+  machine5:
+    build: .
+    command: python3 agent.py --tcp-port 8900
+
+networks:
+  pa3:
+    driver: bridge
