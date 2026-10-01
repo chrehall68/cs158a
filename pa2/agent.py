@@ -3,6 +3,36 @@ from argparse import ArgumentParser
 import json
 import threading
 
+
+class FileTable:
+    def __init__(self):
+        # files are uniquely identified by name
+        # peer -> set of file names that it has
+        self.peer_to_files: dict[str, set[str]] = {}
+        # file -> set of peers that have it
+        self.file_to_peers: dict[str, set[str]] = {}
+
+    def remove_peer(self, peer: str):
+        if peer not in self.peer_to_files:
+            return
+        for file in self.peer_to_files[peer]:
+            self.file_to_peers[file].remove(peer)
+            if len(self.file_to_peers[file]) == 0:
+                del self.file_to_peers[file]
+        del self.peer_to_files[peer]
+
+    def add_peer_files(self, peer: str, files: set[str]):
+        # clean up old files
+        self.remove_peer(peer)
+        # then just insert the new ones
+        self.peer_to_files[peer] = files
+        for file in files:
+            self.file_to_peers[file].add(peer)
+
+    def get_peers_for_file(self, file: str):
+        return self.file_to_peers.get(file, set())
+
+
 UDP_PORT = 54321
 BROADCAST_IP = "255.255.255.255"
 
