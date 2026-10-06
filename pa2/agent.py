@@ -1,6 +1,7 @@
 import socket
 from argparse import ArgumentParser
 import json
+import struct
 import threading
 
 
@@ -27,7 +28,8 @@ class FileTable:
         # then just insert the new ones
         self.peer_to_files[peer] = files
         for file in files:
-            self.file_to_peers[file].add(peer)
+            # Initialize set for file if it doesn't exist and add peer to set
+            self.file_to_peers.setdefault(file, set()).add(peer)
 
     def get_peers_for_file(self, file: str):
         return self.file_to_peers.get(file, set())
@@ -35,6 +37,31 @@ class FileTable:
 
 UDP_PORT = 54321
 BROADCAST_IP = "255.255.255.255"
+
+
+def send_message(conn: socket.socket, message: dict):
+    # Prefix each JSON message with its byte length.
+    payload = json.dumps(message).encode("utf-8")
+    conn.sendall(struct.pack("!I", len(payload)) + payload)
+
+
+def recv_exact(conn: socket.socket, size: int) -> bytes:
+    # TCP may return only part of a message at a time.
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = conn.recv(size - len(chunks))
+        if not chunk:
+            raise ConnectionError("Peer disconnected during a message")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def recv_message(conn: socket.socket) -> dict:
+    # The 4-byte prefix gives the number of JSON bytes that follow.
+    size = struct.unpack("!I", recv_exact(conn, 4))[0]
+
+    # Decode the complete message body after reading its declared length.
+    return json.loads(recv_exact(conn, size).decode("utf-8"))
 
 
 def get_host():
