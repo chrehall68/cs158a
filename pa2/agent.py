@@ -1,6 +1,7 @@
 import socket
 from argparse import ArgumentParser
 import base64
+from datetime import datetime
 import json
 from pathlib import Path
 import struct
@@ -41,12 +42,21 @@ UDP_PORT = 54321
 BROADCAST_IP = "255.255.255.255"
 SHARED_DIR = "shared"
 DOWNLOADS_DIR = "downloads"
+LOG_FILE = "log.txt"
+
+
+def log(message: str):
+    path = Path(LOG_FILE)
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    with path.open("a", encoding="utf-8") as log_file:
+        log_file.write(f"{timestamp} {message}\n")
 
 
 def send_message(conn: socket.socket, message: dict):
     # Prefix each JSON message with its byte length.
     payload = json.dumps(message).encode("utf-8")
     conn.sendall(struct.pack("!I", len(payload)) + payload)
+    log(f"SENT to {conn.getpeername()}, message={message}")
 
 
 def recv_exact(conn: socket.socket, size: int) -> bytes:
@@ -65,7 +75,9 @@ def recv_message(conn: socket.socket) -> dict:
     size = struct.unpack("!I", recv_exact(conn, 4))[0]
 
     # Decode the complete message body after reading its declared length.
-    return json.loads(recv_exact(conn, size).decode("utf-8"))
+    message = json.loads(recv_exact(conn, size).decode("utf-8"))
+    log(f"RECEIVED from {conn.getpeername()}, message={message}")
+    return message
 
 
 def _valid_filename(filename: str) -> bool:
@@ -208,12 +220,15 @@ def get_host():
 
 def handle_tcp_connection(peer_socket, peer_host, peer_tcp_port):
     with peer_socket:
+        log(f"Peer added: {(peer_host, peer_tcp_port)}")
+
         while True:
             # TCP is stream, so get message based on length prefix using recv_message
             try:
                 message = recv_message(peer_socket)
             except ConnectionError:
                 print(f"Peer {peer_host}:{peer_tcp_port} disconnected", flush=True)
+                log(f"Peer removed: {(peer_host, peer_tcp_port)}")
                 break
     
             if message.get("type") == "data_request":
@@ -270,6 +285,7 @@ def peer_ack_task(host: str, tcp_port: int):
         # so this should be a full json message
         data = json.loads(data.decode())
         print("Received", data, flush=True)
+        log(f"RECEIVED from {addr}, message={data}")
         if data["host"] == host and data["port"] == tcp_port:
             # this is our message
             continue
@@ -277,10 +293,12 @@ def peer_ack_task(host: str, tcp_port: int):
         if data["type"] == "request":
             # this is a peer request, so we need to respond with an ack
             temp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            ack_message = {"type": "ack", "host": host, "port": tcp_port}
             temp_socket.sendto(
-                json.dumps({"type": "ack", "host": host, "port": tcp_port}).encode(),
-                (data["host"], 54321),
+                json.dumps(ack_message).encode(),
+                (data["host"], UDP_PORT),
             )
+            log(f"SENT to {(data['host'], UDP_PORT)}, message={ack_message}")
         else:
             assert data["type"] == "ack"
             # this is an ack, so now we need to create a tcp connection
@@ -304,10 +322,12 @@ def main(host: str, tcp_port: int):
     print("Broadcasting to", BROADCAST_IP, UDP_PORT, flush=True)
     broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    request_message = {"type": "request", "host": host, "port": tcp_port}
     broadcast_socket.sendto(
-        json.dumps({"type": "request", "host": host, "port": tcp_port}).encode(),
+        json.dumps(request_message).encode(),
         (BROADCAST_IP, UDP_PORT),
     )
+    log(f"SENT to {(BROADCAST_IP, UDP_PORT)}, message={request_message}")
     # Keep the process interactive until the user quits.
     prompt_for_download(file_table, peer_connections)
 
