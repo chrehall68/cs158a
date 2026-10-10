@@ -7,36 +7,56 @@ from pathlib import Path
 import struct
 import threading
 import time
+from collections import defaultdict
 
 
-class FileTable:
+class PeerTable:
     def __init__(self):
         # files are uniquely identified by name
+        # peers are identified by host and port (ie host:port)
         # peer -> set of file names that it has
         self.peer_to_files: dict[str, set[str]] = {}
+        self.peer_to_socket: dict[str, socket.socket] = {}
         # file -> set of peers that have it
-        self.file_to_peers: dict[str, set[str]] = {}
+        self.file_to_peers: dict[str, set[str]] = defaultdict(set)
 
-    def remove_peer(self, peer: str):
+    @classmethod
+    def format_peer(cls, host: str, port: int):
+        return f"{host}:{port}"
+
+    def __remove_peer_files(self, peer: str):
         if peer not in self.peer_to_files:
             return
+
         for file in self.peer_to_files[peer]:
             self.file_to_peers[file].remove(peer)
             if len(self.file_to_peers[file]) == 0:
                 del self.file_to_peers[file]
         del self.peer_to_files[peer]
 
+    def remove_peer(self, peer: str):
+        if peer not in self.peer_to_socket:
+            return
+        self.__remove_peer_files(peer)
+        del self.peer_to_socket[peer]
+
+    def register_peer(self, peer: str, socket: socket.socket):
+        self.peer_to_socket[peer] = socket
+        self.peer_to_files[peer] = set()
+
     def add_peer_files(self, peer: str, files: set[str]):
         # clean up old files
-        self.remove_peer(peer)
+        self.__remove_peer_files(peer)
         # then just insert the new ones
         self.peer_to_files[peer] = files
         for file in files:
-            # Initialize set for file if it doesn't exist and add peer to set
-            self.file_to_peers.setdefault(file, set()).add(peer)
+            self.file_to_peers[file].add(peer)
 
     def get_peers_for_file(self, file: str):
-        return self.file_to_peers.get(file, set())
+        return [(peer, self.peer_to_socket[peer]) for peer in self.file_to_peers[file]]
+
+    def get_all_peers(self):
+        return [(peer, self.peer_to_socket[peer]) for peer in self.peer_to_socket]
 
 
 UDP_PORT = 54321
@@ -153,7 +173,7 @@ def send_file_list(conn: socket.socket):
     send_message(conn, {"type": "file_list", "files": get_shared_files()})
 
 
-def handle_file_list(file_table: FileTable, peer: str, message: dict):
+def handle_file_list(peer_table: PeerTable, peer: str, message: dict):
     files = message.get("files")
 
     # will probably never happen but just in case
@@ -161,7 +181,7 @@ def handle_file_list(file_table: FileTable, peer: str, message: dict):
         files = []
 
     # update file table with new peer files
-    file_table.add_peer_files(
+    peer_table.add_peer_files(
         peer,
         {file for file in files if _valid_filename(file)},
     )
@@ -212,12 +232,10 @@ def handle_file_response(message: dict) -> bool:
     return False
 
 
-def prompt_for_download(
-    file_table: FileTable, peer_connections: dict[str, socket.socket]
-):
+def prompt_for_download(peer_table: PeerTable):
     while True:
         # Refresh choices so newly advertised files are visible.
-        available_files = file_table.file_to_peers
+        available_files = peer_table.file_to_peers
         if available_files:
             print("Available files:", ", ".join(available_files))
         else:
@@ -234,21 +252,13 @@ def prompt_for_download(
             continue
 
         # Check that at least one peer advertises the chosen name.
-        peers = file_table.get_peers_for_file(filename)
+        peers = peer_table.get_peers_for_file(filename)
         if not peers:
             print(f"No peer advertises {filename}.")
             continue
 
-        # Use a connected peer that advertises the selected filename.
         # Choose a connected peer from the advertisers.
-        conn = None
-        for peer in peers:
-            if peer in peer_connections:
-                conn = peer_connections[peer]
-                break
-        if conn is None:
-            print(f"No connected peer is available for {filename}.")
-            continue
+        conn = peers[0][1]
 
         try:
             request_file_download(conn, filename)
@@ -258,22 +268,17 @@ def prompt_for_download(
             print(f"Requested {filename}.")
 
 
-def get_host():
-    return socket.gethostname()
-
-
 def handle_tcp_connection(
     peer_socket: socket.socket,
     peer_host: str,
     peer_tcp_port: int,
-    file_table: FileTable,
-    peer_connections: dict[str, socket.socket],
+    peer_table: PeerTable,
 ):
     # Same key is used for the peer table and the file table.
     peer = f"{peer_host}:{peer_tcp_port}"
     with peer_socket:
         # Register the peer now that the TCP connection exists
-        peer_connections[peer] = peer_socket
+        peer_table.register_peer(peer, peer_socket)
         log(f"Peer added: {(peer_host, peer_tcp_port)}")
 
         # Send our file list right away instead of waiting for the next 10 second round
@@ -289,8 +294,7 @@ def handle_tcp_connection(
                 message = recv_message(peer_socket)
             except ConnectionError:
                 # Remove the peer and drop the files it advertised
-                peer_connections.pop(peer, None)
-                file_table.remove_peer(peer)
+                peer_table.remove_peer(peer)
                 print(f"Peer {peer_host}:{peer_tcp_port} disconnected", flush=True)
                 log(f"Peer removed: {(peer_host, peer_tcp_port)}")
                 break
@@ -304,7 +308,7 @@ def handle_tcp_connection(
                     print(f"Downloaded {message.get('filename')}", flush=True)
             elif message.get("type") == "file_list":
                 # Peer has advertised its files, so update what it has in the file table
-                handle_file_list(file_table, peer, message)
+                handle_file_list(peer_table, peer, message)
             else:
                 # Unsupported message type in format
                 print(
@@ -316,8 +320,7 @@ def handle_tcp_connection(
 def tcp_listen_task(
     host: str,
     tcp_port: int,
-    file_table: FileTable,
-    peer_connections: dict[str, socket.socket],
+    peer_table: PeerTable,
 ):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((host, tcp_port))
@@ -330,17 +333,17 @@ def tcp_listen_task(
         # Spawn a worker thread to serve this peer, then loop back to accept() the next one
         client_thread = threading.Thread(
             target=handle_tcp_connection,
-            args=(conn, addr[0], addr[1], file_table, peer_connections),
+            args=(conn, addr[0], addr[1], peer_table),
             daemon=True,
         )
         client_thread.start()
 
 
-def file_list_task(peer_connections: dict[str, socket.socket]):
+def file_list_task(peer_table: PeerTable):
     while True:
         time.sleep(FILE_LIST_INTERVAL)
         # Copy the connections so a peer joining or leaving does not break the loop
-        for peer, conn in list(peer_connections.items()):
+        for peer, conn in peer_table.get_all_peers():
             try:
                 send_file_list(conn)
             except OSError:
@@ -351,8 +354,7 @@ def file_list_task(peer_connections: dict[str, socket.socket]):
 def peer_task(
     peer_host: str,
     peer_tcp_port: int,
-    file_table: FileTable,
-    peer_connections: dict[str, socket.socket],
+    peer_table: PeerTable,
 ):
     # connect to peer
     peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -360,16 +362,13 @@ def peer_task(
     print(f"Connected to {peer_host}:{peer_tcp_port}", flush=True)
 
     # Continue handling TCP connection in this thread
-    handle_tcp_connection(
-        peer_socket, peer_host, peer_tcp_port, file_table, peer_connections
-    )
+    handle_tcp_connection(peer_socket, peer_host, peer_tcp_port, peer_table)
 
 
 def peer_ack_task(
     host: str,
     tcp_port: int,
-    file_table: FileTable,
-    peer_connections: dict[str, socket.socket],
+    peer_table: PeerTable,
 ):
     print("Listening for peer acks", flush=True)
     listen_udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -401,29 +400,26 @@ def peer_ack_task(
             # this is an ack, so now we need to create a tcp connection
             threading.Thread(
                 target=peer_task,
-                args=(data["host"], data["port"], file_table, peer_connections),
+                args=(data["host"], data["port"], peer_table),
             ).start()
 
 
 def main(host: str, tcp_port: int):
-    file_table = FileTable()
-    peer_connections: dict[str, socket.socket] = {}
+    peer_table = PeerTable()
     # Keep network listeners in the background while input runs on the main thread.
     threading.Thread(
         target=peer_ack_task,
-        args=(host, tcp_port, file_table, peer_connections),
+        args=(host, tcp_port, peer_table),
         daemon=True,
     ).start()
     threading.Thread(
         target=tcp_listen_task,
-        args=(host, tcp_port, file_table, peer_connections),
+        args=(host, tcp_port, peer_table),
         daemon=True,
     ).start()
 
     # Advertise our file list to every connected peer every 10 seconds.
-    threading.Thread(
-        target=file_list_task, args=(peer_connections,), daemon=True
-    ).start()
+    threading.Thread(target=file_list_task, args=(peer_table,), daemon=True).start()
 
     # broadcast to udp port
     print("Broadcasting to", BROADCAST_IP, UDP_PORT, flush=True)
@@ -436,11 +432,11 @@ def main(host: str, tcp_port: int):
     )
     log(f"SENT to {(BROADCAST_IP, UDP_PORT)}, message={request_message}")
     # Keep the process interactive until the user quits.
-    prompt_for_download(file_table, peer_connections)
+    prompt_for_download(peer_table)
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--tcp-port", type=str)
     args = parser.parse_args()
-    main(get_host(), int(args.tcp_port))
+    main(socket.gethostname(), int(args.tcp_port))
