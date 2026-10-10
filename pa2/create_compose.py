@@ -1,5 +1,4 @@
 from argparse import ArgumentParser
-from pathlib import Path
 import os
 
 NETWORK_STRING = """
@@ -13,7 +12,7 @@ def get_service_string(i):
     return f"""
     machine{i}:
         build: .
-        command: python3 agent.py --tcp-port 8900
+        command: python3 agent.py --tcp-port {8900 + i}
         volumes:
             - ./shared{i}:/app/shared
             - ./downloads{i}:/app/downloads
@@ -29,9 +28,8 @@ def main(n: int):
         f.write("services:\n")
         for i in range(1, n + 1):
             f.write(get_service_string(i))
+            # create empty log file; docker will create the directories
             open(f"log{i}.txt", "w").close()
-            Path(f"shared{i}").mkdir(exist_ok=True)
-            Path(f"downloads{i}").mkdir(exist_ok=True)
         f.write(NETWORK_STRING)
 
 

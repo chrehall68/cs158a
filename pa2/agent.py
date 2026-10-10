@@ -342,7 +342,7 @@ def file_list_task(peer_table: PeerTable):
                 continue
 
 
-def peer_task(
+def connect_to_peer_task(
     peer_host: str,
     peer_tcp_port: int,
     peer_table: PeerTable,
@@ -388,7 +388,7 @@ def peer_ack_task(
             assert data["type"] == "ack"
             # this is an ack, so now we need to create a tcp connection
             threading.Thread(
-                target=peer_task,
+                target=connect_to_peer_task,
                 args=(data["host"], data["port"], peer_table),
             ).start()
 
