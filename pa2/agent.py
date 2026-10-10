@@ -139,7 +139,12 @@ def get_shared_files() -> list[str]:
     if not shared.is_dir():
         return []
 
-    return sorted(p.name for p in shared.iterdir() if p.is_file())
+    try:
+        return sorted(p.name for p in shared.iterdir() if p.is_file())
+    except OSError as error:
+        # report it rather than letting the send fail without a trace
+        print(f"Could not read {SHARED_DIR}: {error}", flush=True)
+        return []
 
 
 # send message to peer which files we have
