@@ -1,0 +1,4 @@
+docker-compose.yml
+shared*
+downloads*
+log*.txt
