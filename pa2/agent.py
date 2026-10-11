@@ -9,12 +9,46 @@ import threading
 import time
 
 
+class ReadyCounter:
+    def __init__(self):
+        self.count = 0
+        self.lock = threading.Lock()
+        self.condition = threading.Condition(self.lock)
+
+    def __add__(self, other):
+        with self.lock:
+            self.count += other
+            self.condition.notify_all()
+            return self
+
+    def value(self):
+        with self.lock:
+            return self.count
+
+    def wait_till_eq(self, value: int):
+        with self.lock:
+            self.condition.wait_for(lambda: self.count == value)
+
+
+class LockedSocket(socket.socket):
+    def __init__(self, raw_socket: socket.socket):
+        super().__init__(fileno=raw_socket.detach())
+        self.lock = threading.Lock()
+
+    def sendall(self, data):
+        with self.lock:
+            return super().sendall(data)
+
+    def recv(self, size):
+        return super().recv(size)
+
+
 class PeerTable:
     def __init__(self):
         # files are uniquely identified by name
         # peer -> set of file names that it has
         self.peer_to_files: dict[str, set[str]] = {}
-        self.peer_to_socket: dict[str, socket.socket] = {}
+        self.peer_to_socket: dict[str, LockedSocket] = {}
         # file -> set of peers that have it
         self.file_to_peers: dict[str, set[str]] = {}
 
@@ -34,7 +68,7 @@ class PeerTable:
         self.__remove_peer_files(peer)
         del self.peer_to_socket[peer]
 
-    def register_peer(self, peer: str, socket: socket.socket):
+    def register_peer(self, peer: str, socket: LockedSocket):
         self.peer_to_socket[peer] = socket
         self.peer_to_files[peer] = set()
 
@@ -71,14 +105,14 @@ def log(message: str):
         log_file.write(f"{timestamp} {message}\n")
 
 
-def send_message(conn: socket.socket, message: dict):
+def send_message(conn: LockedSocket, message: dict):
     # Prefix each JSON message with its byte length.
     payload = json.dumps(message).encode("utf-8")
     conn.sendall(struct.pack("!I", len(payload)) + payload)
     log(f"SENT to {conn.getpeername()}, message={message}")
 
 
-def recv_exact(conn: socket.socket, size: int) -> bytes:
+def recv_exact(conn: LockedSocket, size: int) -> bytes:
     # TCP may return only part of a message at a time.
     chunks = bytearray()
     while len(chunks) < size:
@@ -89,7 +123,7 @@ def recv_exact(conn: socket.socket, size: int) -> bytes:
     return bytes(chunks)
 
 
-def recv_message(conn: socket.socket) -> dict:
+def recv_message(conn: LockedSocket) -> dict:
     # The 4-byte prefix gives the number of JSON bytes that follow.
     size = struct.unpack("!I", recv_exact(conn, 4))[0]
 
@@ -109,7 +143,7 @@ def _valid_filename(filename: str) -> bool:
     }  # prevent peer from accessing any file on system, only shared
 
 
-def handle_data_request(conn: socket.socket, message: dict):
+def handle_data_request(conn: LockedSocket, message: dict):
     # Read the requested filename from the peer's message.
     filename = message.get("filename")
     if not isinstance(filename, str) or not _valid_filename(filename):
@@ -165,7 +199,7 @@ def get_shared_files() -> list[str]:
 
 
 # send message to peer which files we have
-def send_file_list(conn: socket.socket):
+def send_file_list(conn: LockedSocket):
     # use send_message to write to log
     send_message(conn, {"type": "file_list", "files": get_shared_files()})
 
@@ -184,7 +218,7 @@ def handle_file_list(peer_table: PeerTable, peer: str, message: dict):
     )
 
 
-def request_file_download(conn: socket.socket, filename: str):
+def request_file_download(conn: LockedSocket, filename: str):
     if not _valid_filename(filename):
         raise ValueError("filename must be a single filename, not a path")
 
@@ -271,6 +305,7 @@ def handle_tcp_connection(
 ):
     # Same key is used for the peer table and the file table.
     peer = f"{peer_host}:{peer_tcp_port}"
+    peer_socket = LockedSocket(peer_socket)
     with peer_socket:
         # Register the peer now that the TCP connection exists
         peer_table.register_peer(peer, peer_socket)
@@ -312,12 +347,14 @@ def tcp_accept_task(
     host: str,
     tcp_port: int,
     peer_table: PeerTable,
+    counter: ReadyCounter,
 ):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((host, tcp_port))
 
     log(f"TCP Listening on {host} {tcp_port}")
     sock.listen()
+    counter += 1
     while True:
         conn, addr = sock.accept()
         log(f"Accepted connection from {addr}")
@@ -357,15 +394,14 @@ def connect_to_peer_task(
 
 
 def peer_ack_task(
-    host: str,
-    tcp_port: int,
-    peer_table: PeerTable,
+    host: str, tcp_port: int, peer_table: PeerTable, ready_counter: ReadyCounter
 ):
     listen_udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     listen_udp_socket.bind(("0.0.0.0", UDP_PORT))
     ack_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     log(f"UDP Listening on {host} {UDP_PORT}")
 
+    ready_counter += 1
     while True:
         data, addr = listen_udp_socket.recvfrom(1024)
         # udp is messages
@@ -381,29 +417,30 @@ def peer_ack_task(
             ack_message = {"type": "ack", "host": host, "port": tcp_port}
             ack_socket.sendto(
                 json.dumps(ack_message).encode(),
-                (data["host"], UDP_PORT),
+                (addr[0], UDP_PORT),
             )
-            log(f"SENT to {(data['host'], UDP_PORT)}, message={ack_message}")
+            log(f"SENT to {(addr[0], UDP_PORT)}, message={ack_message}")
         else:
             assert data["type"] == "ack"
             # this is an ack, so now we need to create a tcp connection
             threading.Thread(
                 target=connect_to_peer_task,
-                args=(data["host"], data["port"], peer_table),
+                args=(addr[0], data["port"], peer_table),
             ).start()
 
 
 def main(host: str, tcp_port: int):
     peer_table = PeerTable()
+    ready_counter = ReadyCounter()
     # Keep network listeners in the background while input runs on the main thread.
     threading.Thread(
         target=peer_ack_task,
-        args=(host, tcp_port, peer_table),
+        args=(host, tcp_port, peer_table, ready_counter),
         daemon=True,
     ).start()
     threading.Thread(
         target=tcp_accept_task,
-        args=(host, tcp_port, peer_table),
+        args=(host, tcp_port, peer_table, ready_counter),
         daemon=True,
     ).start()
 
@@ -411,6 +448,8 @@ def main(host: str, tcp_port: int):
     threading.Thread(target=file_list_task, args=(peer_table,), daemon=True).start()
 
     # broadcast to udp port
+    # only broadcast once we are ready
+    ready_counter.wait_till_eq(2)
     broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     request_message = {"type": "request", "host": host, "port": tcp_port}

@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-import os
+import subprocess
 
 NETWORK_STRING = """
 networks:
@@ -11,7 +11,7 @@ networks:
 def get_service_string(i):
     return f"""
     machine{i}:
-        build: .
+        image: pa2
         command: python3 agent.py --tcp-port {8900 + i}
         volumes:
             - ./shared{i}:/app/shared
@@ -39,4 +39,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(args.n)
 
-    os.execvp("docker", ["docker", "compose", "up", "--build"])
+    subprocess.call(["docker", "build", "-t", "pa2", "."])
+    proc = subprocess.Popen(["docker", "compose", "up", "--build"])
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.wait()
+    finally:
+        subprocess.call(["docker", "compose", "down"])
