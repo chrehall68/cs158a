@@ -15,6 +15,7 @@ Bottleneck queue: s1-eth1 (s1 -> s2 direction)
 Complete every TODO. Keep the command-line options, host names, and
 addresses unchanged: the commands in the handout depend on them.
 """
+
 import argparse
 import os
 
@@ -29,14 +30,14 @@ MTU = 1500  # bytes
 
 
 class Dumbbell(Topo):
-    def build(self, n=2, bw=50, delay='10ms', delay1=None, q=83, loss=0):
+    def build(self, n=2, bw=50, delay="10ms", delay1=None, q=83, loss=0):
         """n:      number of sender/receiver pairs
-           bw:     bottleneck capacity C in Mbps
-           delay:  one-way delay d on each sender link (e.g. '10ms')
-           delay1: one-way delay d1 for snd1 only (E3); None = same as delay
-           q:      bottleneck buffer B in packets
-           loss:   random loss on the bottleneck in percent (E5)"""
-        s1, s2 = self.addSwitch('s1'), self.addSwitch('s2')
+        bw:     bottleneck capacity C in Mbps
+        delay:  one-way delay d on each sender link (e.g. '10ms')
+        delay1: one-way delay d1 for snd1 only (E3); None = same as delay
+        q:      bottleneck buffer B in packets
+        loss:   random loss on the bottleneck in percent (E5)"""
+        s1, s2 = self.addSwitch("s1"), self.addSwitch("s2")
 
         # TODO 1: Add the bottleneck link between s1 and s2.
         #   - It must be the first link you add, so it gets s1-eth1/s2-eth1.
@@ -50,10 +51,17 @@ class Dumbbell(Topo):
         #     http://mininet.org/api/classmininet_1_1link_1_1Link.html
         #   bw, delay, loss, max_queue_size in TCIntf.config:
         #     http://mininet.org/api/classmininet_1_1link_1_1TCIntf.html
+        self.addLink(
+            s1,
+            s2,
+            params1={"bw": bw, "loss": loss, "max_queue_size": q},
+            params2={"bw": bw, "max_queue_size": q},
+        )
 
+        delay1 = delay if delay1 is None else delay1
         for i in range(n):
-            snd = self.addHost(f'snd{i}', ip=f'10.0.0.{1 + i}/24')
-            rcv = self.addHost(f'rcv{i}', ip=f'10.0.0.{101 + i}/24')
+            snd = self.addHost(f"snd{i}", ip=f"10.0.0.{1 + i}/24")
+            rcv = self.addHost(f"rcv{i}", ip=f"10.0.0.{101 + i}/24")
 
             # TODO 2: Connect snd to s1 and rcv to s2.
             #   - Put the propagation delay on the sender's link. TCLink
@@ -62,29 +70,68 @@ class Dumbbell(Topo):
             #   - Give the sender's link a large max_queue_size (e.g. 10000)
             #     so it never drops packets.
             #   - The receiver's link needs no parameters.
+            link_delay = delay1 if i == 1 else delay
+            self.addLink(
+                snd,
+                s1,
+                delay=link_delay,
+                max_queue_size=10000,
+            )
+            self.addLink(rcv, s2)
+
+
+def to_ms(time_string: str) -> float:
+    if time_string.find("us") != -1:
+        return float(time_string[:-2]) / 1_000
+    elif time_string.find("ms") != -1:
+        return float(time_string[:-2])
+    elif time_string.find("s") != -1:
+        return float(time_string[:-1]) * 1_000
+    assert False
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--bw', type=float, default=50,
-                   help='bottleneck capacity C in Mbps (default 50)')
-    p.add_argument('--delay', default='10ms',
-                   help='one-way delay d on each sender link; RTT_min = 2d (default 10ms)')
-    p.add_argument('--delay1', default=None,
-                   help='one-way delay d1 for snd1 only, for E3 (default: same as --delay)')
-    p.add_argument('--buf', type=float, default=1,
-                   help='bottleneck buffer B in units of BDP (default 1)')
-    p.add_argument('--loss', type=float, default=0,
-                   help='random loss on the bottleneck in percent, for E5 (default 0)')
+    p.add_argument(
+        "--bw",
+        type=float,
+        default=50,
+        help="bottleneck capacity C in Mbps (default 50)",
+    )
+    p.add_argument(
+        "--delay",
+        default="10ms",
+        help="one-way delay d on each sender link; RTT_min = 2d (default 10ms)",
+    )
+    p.add_argument(
+        "--delay1",
+        default=None,
+        help="one-way delay d1 for snd1 only, for E3 (default: same as --delay)",
+    )
+    p.add_argument(
+        "--buf",
+        type=float,
+        default=1,
+        help="bottleneck buffer B in units of BDP (default 1)",
+    )
+    p.add_argument(
+        "--loss",
+        type=float,
+        default=0,
+        help="random loss on the bottleneck in percent, for E5 (default 0)",
+    )
     a = p.parse_args()
 
     # TODO 3: Compute RTT_min (seconds), the BDP in packets, and the buffer
     # q = buf x BDP in packets (at least 1). Use snd0's delay (--delay).
-    rtt = None
-    bdp_pkts = None
-    q = None
-    print(f'*** RTT_min = {rtt * 1000:.0f} ms, BDP = {bdp_pkts:.0f} pkts, '
-          f'B = {a.buf} x BDP = {q} pkts')
+    rtt = 2 * to_ms(a.delay) / 1_000
+    # since bw is in Mbps, convert to bps, then convert to bytes, then to packets
+    bdp_pkts = a.bw * 1e6 * rtt / 8 / MTU
+    q = max(1, round(a.buf * bdp_pkts))
+    print(
+        f"*** RTT_min = {rtt * 1000:.0f} ms, BDP = {bdp_pkts:.0f} pkts, "
+        f"B = {a.buf} x BDP = {q} pkts"
+    )
 
     topo = Dumbbell(bw=a.bw, delay=a.delay, delay1=a.delay1, q=q, loss=a.loss)
     # Standalone learning switches: no OpenFlow controller needed
@@ -96,14 +143,14 @@ def main():
     # limit counts real 1500 B packets rather than 64 KB super-packets
     for node in net.hosts + net.switches:
         for intf in node.intfNames():
-            if intf != 'lo':
-                node.cmd(f'ethtool -K {intf} tso off gso off gro off')
+            if intf != "lo":
+                node.cmd(f"ethtool -K {intf} tso off gso off gro off")
 
     for h in net.hosts:
         # Don't reuse cached ssthresh from the previous trial
-        h.cmd('sysctl -w net.ipv4.tcp_no_metrics_save=1')
-        if h.name.startswith('rcv'):
-            h.cmd('iperf3 -s -D')
+        h.cmd("sysctl -w net.ipv4.tcp_no_metrics_save=1")
+        if h.name.startswith("rcv"):
+            h.cmd("iperf3 -s -D")
 
     CLI(net)
 
@@ -111,6 +158,6 @@ def main():
     net.stop()
 
 
-if __name__ == '__main__':
-    setLogLevel('info')
+if __name__ == "__main__":
+    setLogLevel("info")
     main()
