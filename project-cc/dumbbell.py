@@ -27,6 +27,11 @@ from mininet.node import OVSBridge
 from mininet.topo import Topo
 
 MTU = 1500  # bytes
+DEFAULT_BW = 50
+DEFAULT_DELAY = "10ms"
+DEFAULT_DELAY1 = None
+DEFAULT_BUF = 1
+DEFAULT_LOSS = 0
 
 
 class Dumbbell(Topo):
@@ -90,50 +95,19 @@ def to_ms(time_string: str) -> float:
     assert False
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument(
-        "--bw",
-        type=float,
-        default=50,
-        help="bottleneck capacity C in Mbps (default 50)",
-    )
-    p.add_argument(
-        "--delay",
-        default="10ms",
-        help="one-way delay d on each sender link; RTT_min = 2d (default 10ms)",
-    )
-    p.add_argument(
-        "--delay1",
-        default=None,
-        help="one-way delay d1 for snd1 only, for E3 (default: same as --delay)",
-    )
-    p.add_argument(
-        "--buf",
-        type=float,
-        default=1,
-        help="bottleneck buffer B in units of BDP (default 1)",
-    )
-    p.add_argument(
-        "--loss",
-        type=float,
-        default=0,
-        help="random loss on the bottleneck in percent, for E5 (default 0)",
-    )
-    a = p.parse_args()
-
+def start_net(bw, delay, delay1, buf, loss):
     # TODO 3: Compute RTT_min (seconds), the BDP in packets, and the buffer
     # q = buf x BDP in packets (at least 1). Use snd0's delay (--delay).
-    rtt = 2 * to_ms(a.delay) / 1_000
+    rtt = 2 * to_ms(delay) / 1_000
     # since bw is in Mbps, convert to bps, then convert to bytes, then to packets
-    bdp_pkts = a.bw * 1e6 * rtt / 8 / MTU
-    q = max(1, round(a.buf * bdp_pkts))
+    bdp_pkts = bw * 1e6 * rtt / 8 / MTU
+    q = max(1, round(buf * bdp_pkts))
     print(
         f"*** RTT_min = {rtt * 1000:.0f} ms, BDP = {bdp_pkts:.0f} pkts, "
-        f"B = {a.buf} x BDP = {q} pkts"
+        f"B = {buf} x BDP = {q} pkts"
     )
 
-    topo = Dumbbell(bw=a.bw, delay=a.delay, delay1=a.delay1, q=q, loss=a.loss)
+    topo = Dumbbell(bw=bw, delay=delay, delay1=delay1, q=q, loss=loss)
     # Standalone learning switches: no OpenFlow controller needed
     net = Mininet(topo=topo, link=TCLink, switch=OVSBridge, controller=None)
     net.start()
@@ -151,11 +125,49 @@ def main():
         h.cmd("sysctl -w net.ipv4.tcp_no_metrics_save=1")
         if h.name.startswith("rcv"):
             h.cmd("iperf3 -s -D")
+    return net
 
-    CLI(net)
 
+def stop_net(net: Mininet):
     os.system('pkill -f "iperf3 -s"')
     net.stop()
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument(
+        "--bw",
+        type=float,
+        default=DEFAULT_BW,
+        help="bottleneck capacity C in Mbps (default 50)",
+    )
+    p.add_argument(
+        "--delay",
+        default=DEFAULT_DELAY,
+        help="one-way delay d on each sender link; RTT_min = 2d (default 10ms)",
+    )
+    p.add_argument(
+        "--delay1",
+        default=DEFAULT_DELAY1,
+        help="one-way delay d1 for snd1 only, for E3 (default: same as --delay)",
+    )
+    p.add_argument(
+        "--buf",
+        type=float,
+        default=DEFAULT_BUF,
+        help="bottleneck buffer B in units of BDP (default 1)",
+    )
+    p.add_argument(
+        "--loss",
+        type=float,
+        default=DEFAULT_LOSS,
+        help="random loss on the bottleneck in percent, for E5 (default 0)",
+    )
+    a = p.parse_args()
+
+    net = start_net(a.bw, a.delay, a.delay1, a.buf, a.loss)
+    CLI(net)
+    stop_net(net)
 
 
 if __name__ == "__main__":

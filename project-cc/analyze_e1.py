@@ -1,11 +1,12 @@
-"""Plot cwnd(t) for E1, averaged over trials.
+"""
+Plot cwnd(t) for E1, averaged over trials.
 
 Usage:
     python analyze_e1.py data/e1                 # every config found in the dir
     python analyze_e1.py data/e1 --out e1.png    # save instead of show
 
 Files are expected to be named <experiment>_<setting>_<algorithm>_t<trial>_ss.txt
-(e.g. e1_b1_reno_t3_ss.txt). Trials of the same config are grouped together.
+(e.g. e1_b1_reno_t3_ss.txt).
 """
 
 import re
@@ -50,6 +51,8 @@ def extract_info(filename: Path) -> list[dict]:
         # (state line, detail line) pair per socket.
         timestamp = float(lines[i])
         i += 1
+        if i >= len(lines):
+            break  # `timeout` killed the sampler between `date` and `ss`
         assert lines[i].startswith("State"), f"{filename}:{i + 1}: expected ss header"
         i += 1
         body = []
